@@ -2,6 +2,8 @@ from dataclasses import dataclass, asdict
 from typing import List
 from datetime import datetime
 import json
+import os
+import tempfile
 
 @dataclass
 class Task:
@@ -56,23 +58,48 @@ def show_tasks(day: DayPlanType) -> None:
         return
 
     print("Your plan for today:")
-    # Sort tasks by time (use datetime for correct ordering)
+    # Sort tasks by time
     sorted_day = sorted(day, key=lambda x: datetime.strptime(x.time, "%H:%M"))
     for item in sorted_day:
         print(f"{item.time} - {item.task}")
 
 
 def save_plan(path: str, day: DayPlanType) -> None:
-    """Save current plan to a JSON file (list of objects with time/task)."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump([asdict(t) for t in day], f, ensure_ascii=False, indent=2)
+    """Save current plan to a JSON file (list of objects with time/task).
+
+    Uses atomic replace (write to temporary file then os.replace) to avoid
+    corrupting the target file on failure.
+    """
+    data = [asdict(t) for t in day]
+    directory = os.path.dirname(path) or '.'
+    os.makedirs(directory, exist_ok=True)
+
+    # Write to a temporary file in the same directory then replace
+    with tempfile.NamedTemporaryFile('w', delete=False, dir=directory, encoding='utf-8') as tf:
+        json.dump(data, tf, ensure_ascii=False, indent=2)
+        tmpname = tf.name
+
+    os.replace(tmpname, path)
 
 
 def load_plan(path: str) -> DayPlanType:
-    """Load plan from a JSON file. If file is missing, return empty list."""
+    """Load plan from a JSON file. If file is missing or invalid, return empty list."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return [Task(**item) for item in data]
+        tasks: DayPlanType = []
+        for item in data:
+            try:
+                time = parse_time(item.get("time", ""))
+                task_desc = str(item.get("task", "")).strip()
+                if task_desc:
+                    tasks.append(Task(time=time, task=task_desc))
+            except Exception:
+                # Skip invalid entries
+                continue
+        return tasks
     except FileNotFoundError:
+        return []
+    except (json.JSONDecodeError, TypeError):
+        # If file is corrupted, return empty list (do not raise)
         return []
